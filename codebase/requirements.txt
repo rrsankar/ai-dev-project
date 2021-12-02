@@ -3,3 +3,5 @@ matplotlib
 datefinder
 requests
 tqdm
+beautifulsoup4
+openpyxl
