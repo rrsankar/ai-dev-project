@@ -1,7 +1,10 @@
+""" Importing all the necessary libraries/modules for the program."""
+
 import re
 import warnings
-from collections import deque
+from collections import Counter
 from datetime import datetime, timedelta
+from typing import Tuple
 
 import datefinder
 import ipywidgets as widgets
@@ -17,7 +20,9 @@ from tqdm import tqdm
 
 warnings.filterwarnings("ignore")
 
-# Initialize constants.
+MODEL_PATH = "/home/ram/ai-dev-project-latest/AIDI_1100_02_PROJECT/LSTM_model"
+
+# Initialize constants, setting the number of articles extracted from the website to 4.
 ARTICLES_TO_EXTRACT_PER_DAY = 4
 
 
@@ -25,9 +30,6 @@ class Parser:
     """
     Class with methods to generate links to news releases, links to articles, parse/scrape articles and extract required information.
     """
-
-    def __init__(self):
-        pass
 
     def generate_links_for_date_wise_news_releases(self) -> list:
         """
@@ -38,8 +40,9 @@ class Parser:
         # Get start and end date to fetch articles.
         current_time = datetime.now()
         time_two_weeks_back = current_time - timedelta(days=13)
-        print(f"\nParsing news from " + time_two_weeks_back.strftime("%m/%d/%Y %H:00") + " to " + current_time.strftime(
-            "%m/%d/%Y %H:00") + "\n")
+        print(f"\nParsing news from "
+              + time_two_weeks_back.strftime("%m/%d/%Y %H:00")
+              + " to " + current_time.strftime("%m/%d/%Y %H:00") + "\n")
 
         # Generate a list of links that shows news release of past two weeks.
         filtered_link_list = []
@@ -76,6 +79,7 @@ class Parser:
             articles_link_list.extend(
                 [f"https://www.prnewswire.com{i.attrs.get('href')}" for i in news_release_list if
                  i.attrs.get("href", "")])
+
         print("\n\nFetching complete.\n\n")
 
         # Display all article links.
@@ -120,14 +124,14 @@ class Parser:
                 "article_content": blog_body},
                 ignore_index=True)
 
-        print("\nExtraction complete. All information added to dataframe.")
+        print("\n\nExtraction complete. All information added to dataframe.\n")
 
         return data
 
 
 class Tracker:
     """
-    Class to store extracted data and fetch stock tickers from it.
+    Class to store extracted data in xlsx format and fetch stock tickers from it.
     """
 
     def __init__(self, data):
@@ -151,18 +155,41 @@ class Tracker:
         # Dropping duplicates if present.
         self.data.drop_duplicates(subset="article_content", inplace=True, ignore_index=True)
 
-    def fetch_tickers(self) -> set:
+    def fetch_tickers(self) -> list:
         """
         Method to fetch tickers from all article content.
         :return: Set of tickers.
         """
 
-        tickers = set()
+        tickers = []
         for i in range(len(self.data)):
-            temp = re.findall(r':\s[A-Z]{1,5}[)]', self.data.iloc[i]["article_content"])
-            for tick in temp:
-                tickers.add(tick[-(len(tick) - 2):-1])
+
+            # Find all ticker tokens in each parsed article content.
+            tmp_ticker_tokens = re.findall(r':\s[A-Z]{1,5}[)]', self.data.iloc[i]["article_content"])
+
+            # Using lambda function, loop through all extracted ticker tokens and convert to required format.
+            tickers.extend(list(map(lambda x: x[-(len(x) - 2):-1], tmp_ticker_tokens)))
+
         return tickers
+
+    def fetch_most_frequent_ticker(self, tickers) -> str:
+        """
+        Method to fetch most frequent ticker from all article content.
+        :return: Set of tickers.
+        """
+
+        frequent_stock = ""
+        if tickers:
+            cnt = Counter(tickers)
+            frequent_stock = cnt.most_common(1)[0][0] if cnt else ""
+        else:
+            print("No tickers found.")
+
+        # Check if format is correct.
+        if not isinstance(frequent_stock, str):
+            raise Exception(f"Format error for 'frequent_stock' variable. Supposed to be 'str', instead got {type(frequent_stock)}")
+
+        return frequent_stock
 
 
 class Retriever:
@@ -173,15 +200,21 @@ class Retriever:
     def __init__(self, tickers):
         self.tickers = tickers
 
-    def retrieve(self) -> dict:
+    def retrieve(self) -> Tuple[dict, list]:
         """
         Method to retrieve ticker prices using yahoo finance api.
         :return: Stock information as dict.
         """
+
         stocks = {}
         for tick in self.tickers:
-            stocks[tick] = yf.Ticker(tick).history(period="YTD")
-        return stocks
+            # If ticker info is unavailable to fetch from yahoo API, remove ticker from ticker list.
+            if yf.Ticker(tick).history(period="YTD").empty:
+                self.tickers.remove(tick)
+            else:
+                stocks[tick] = yf.Ticker(tick).history(period="YTD")
+
+        return stocks, self.tickers
 
 
 class Visualizer:
@@ -207,19 +240,26 @@ class Visualizer:
                           height=800,)
         fig.show()
 
-    def plot_tickers(self, ticker):
-        fig = plt.figure(figsize=(30, 21))
+    def plot_tickers(self, ticker, index=0):
+        fig = plt.figure(figsize=(30, 25))
         ax1 = plt.subplot(2, 2, 1)
+        plt.title("Close Price", fontsize=25)
+        plt.xlabel("Date", fontsize=25)
+        plt.ylabel("Prie in USD", fontsize=25)
         plt.xticks(rotation=45)
         plt.xticks(fontsize=20)
         plt.yticks(fontsize=20)
         ax2 = plt.subplot(2, 2, 2)
+        plt.title("Volume", fontsize=25)
         plt.xticks(rotation=45)
         plt.xticks(fontsize=20)
+        plt.xlabel("Date", fontsize=25)
+        plt.ylabel("Shares per day", fontsize=25)
         plt.yticks(fontsize=20)
         ax2.yaxis.offsetText.set_fontsize(20)
-        ax1.plot(self.stocks[ticker]["Close"])
-        ax2.plot(self.stocks[ticker]["Volume"])
+        ax1.plot(self.stocks[ticker]["Close"][index:])
+        ax2.plot(self.stocks[ticker]["Volume"][index:])
+        plt.suptitle("Charts for " + ticker, fontsize=40)
 
 
 class StockRecommender:
@@ -231,64 +271,67 @@ class StockRecommender:
         self.stocks = stocks
 
         # Loading stock recommendation model.
-        self.model = tf.keras.models.load_model("LSTM_stock")
+        self.model = tf.keras.models.load_model(f"{MODEL_PATH}")
 
     def model_predict(self, X):
-        if np.argmax(self.model.predict(X)[-1]) == 0:
-            print("Sell")
+        temp = self.model.predict(X)
+        if 0.55 > temp[0][0] > 0.45:
+            print("Wait before buying stock.")
         else:
-            print("buy")
+            if np.argmax(self.model.predict(X)) == 0:
+                print("Don't buy stock.")
+            else:
+                print("Buy stock.")
 
     def preprocess(self, ticker):
         series = self.stocks[ticker]["Close"]
+        series = series[-31:]
         series = series.pct_change()
-        series = series.dropna()
-        seq_data = []
-        prev_days = deque(maxlen=100)
-        for i in series:
-            prev_days.append(i)
-            if len(prev_days) == 100:
-                seq_data.append([np.array(prev_days)])
-            X = []
-            for seq in seq_data:
-                X.append(seq)
-            X = np.array(X)
-        return self.model_predict(X.reshape(-1, X.shape[2], X.shape[1]))
+        series.dropna(inplace=True)
+        X = np.array(series)
+        return self.model_predict(X.reshape(1, X.shape[0], 1))
 
 
 def main():
 
     # Web scraping.
     parser_obj = Parser()
-
     date_wise_news_releases_links = parser_obj.generate_links_for_date_wise_news_releases()
     articles_links = parser_obj.generate_links_to_articles(date_wise_news_releases_links)
     data = parser_obj.parse_data_from_web(articles_links)
-    print(data)
 
     # Tracking: storing data and generating tickers.
     tracker_obj = Tracker(data)
-
     tracker_obj.store_data_as_excel()
     tracker_obj.preprocess_data()
     tickers = tracker_obj.fetch_tickers()
 
     # Retrieving stock info.
     retriever_obj = Retriever(tickers)
-
-    stocks = retriever_obj.retrieve()
+    stocks, tickers = retriever_obj.retrieve()
+    try:
+        common_ticker = tracker_obj.fetch_most_frequent_ticker(tickers)
+    except Exception as err:
+        common_ticker = ""
+        print("\nERROR:", str(err))
 
     # Visualization
     visualizer_obj = Visualizer(stocks)
     i_cl = ["gold", "green", "cyan"]
     d_cl = ["gray", "red", "black"]
-
     widgets.interact(visualizer_obj.generate_candle_stick_visualization, ticker=stocks.keys(), increasing_line=i_cl, decreasing_line=d_cl)
     widgets.interact(visualizer_obj.plot_tickers, ticker=stocks.keys())
 
     # Stock recommendation
     stock_recommender_obj = StockRecommender(stocks)
-
     widgets.interact(stock_recommender_obj.preprocess, ticker=stocks.keys())
+
+    # Show recommendation and visualization for most frequent stock symbol.
+    if common_ticker:
+        stock_recommender_obj.preprocess(common_ticker)
+        visualizer_obj.plot_tickers(common_ticker, index=-30)
+    else:
+        print("\nERROR: common ticker not available.")
+
 
 main()
